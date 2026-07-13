@@ -1,5 +1,5 @@
 -- ==========================================
--- 🔑 WAKEHUB KEY VERIFICATION (FIXED)
+-- 🔑 WAKEHUB KEY VERIFICATION (FIXED - Allows Numbers)
 -- ==========================================
 
 local Players = game:GetService("Players")
@@ -130,35 +130,28 @@ end
 -- ==========================================
 
 local function getKey()
-    -- Check if script_key exists
     if script_key ~= nil and script_key ~= "" then
         return script_key
     end
     
-    -- Check if key was passed as an argument
     if arg and arg[1] and arg[1] ~= "" then
         return arg[1]
     end
     
-    -- Check if key exists in the environment
     if _G.script_key and _G.script_key ~= "" then
         return _G.script_key
     end
     
-    -- Try to get from the loader URL (if it was passed)
-    if syn and syn.crypto and syn.crypto.custom then
-        -- Some executors pass args differently
-        local args = {...}
-        if args[1] and args[1] ~= "" then
-            return args[1]
-        end
+    local args = {...}
+    if args[1] and args[1] ~= "" then
+        return args[1]
     end
     
     return nil
 end
 
 -- ==========================================
--- CHECK KEY FORMAT
+-- CHECK KEY FORMAT (UPDATED - Allows Numbers)
 -- ==========================================
 
 local function isValidKey(key)
@@ -166,8 +159,9 @@ local function isValidKey(key)
         return false
     end
     
-    -- Key must be exactly: WAKE-XXXX-XXXX where X is uppercase letter
-    local pattern = "^WAKE%-%u%u%u%u%-%u%u%u%u$"
+    -- Key must be: WAKE-XXXX-XXXX where X is letter OR number
+    -- [A-Z0-9] means: A-Z OR 0-9
+    local pattern = "^WAKE%-[A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]%-[A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]$"
     return string.match(key, pattern) ~= nil
 end
 
@@ -187,11 +181,11 @@ end
 
 print("📝 Key found: " .. key)
 
--- Check key format
+-- Check key format (NOW ALLOWS NUMBERS)
 if not isValidKey(key) then
     print("❌ Invalid key format: " .. key)
-    print("✅ Expected format: WAKE-XXXX-XXXX where X is an uppercase letter")
-    kickUser("Invalid key format!\n\nKey must be: WAKE-XXXX-XXXX\nExample: WAKE-MYJT-JH18")
+    print("✅ Expected format: WAKE-XXXX-XXXX where X is letter OR number")
+    kickUser("Invalid key format!\n\nKey must be: WAKE-XXXX-XXXX\nExample: WAKE-MYJT-JH18 or WAKE-ABCD-1234")
     return
 end
 
