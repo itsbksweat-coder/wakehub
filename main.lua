@@ -5,8 +5,11 @@
 -- A blue ghost shows where everyone else sees you. Toggle off to resync.
 -- Needs setfflag. If your executor/client has the flags blocked, it will tell you.
 
-if getgenv().__DESYNC_LOADED then
-	getgenv().__DESYNC_CLEANUP()
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+local env = (getgenv and getgenv()) or _G
+if env.__DESYNC_LOADED then
+	pcall(env.__DESYNC_CLEANUP)
 end
 
 local Players = game:GetService("Players")
@@ -15,6 +18,7 @@ local RunService = game:GetService("RunService")
 
 local KEY = Enum.KeyCode.V
 local player = Players.LocalPlayer
+while not player do task.wait() player = Players.LocalPlayer end
 
 -- flags set while desynced, and the value restored on resync
 local FLAGS = {
@@ -27,7 +31,7 @@ local ghost, gui, button
 local conns = {}
 
 local function setFlags(enable)
-	local setf = setfflag or (getgenv().setfflag)
+	local setf = setfflag or env.setfflag
 	if not setf then
 		warn("[desync] setfflag not supported by this executor")
 		return false
@@ -83,19 +87,38 @@ end
 gui = Instance.new("ScreenGui")
 gui.Name = "DesyncGui"
 gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 999999
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
 button = Instance.new("TextButton")
-button.Size = UDim2.new(0, 130, 0, 36)
-button.Position = UDim2.new(0, 12, 0.5, 0)
+button.Size = UDim2.new(0, 140, 0, 40)
+button.Position = UDim2.new(0, 20, 0.5, 0)
 button.TextColor3 = Color3.new(1, 1, 1)
 button.Font = Enum.Font.GothamBold
 button.TextSize = 14
 button.BorderSizePixel = 0
+button.Active = true
+button.Draggable = true
+button.ZIndex = 10
 button.Parent = gui
 Instance.new("UICorner", button).CornerRadius = UDim.new(0, 6)
-pcall(function()
-	gui.Parent = (gethui and gethui()) or game:GetService("CoreGui")
-end)
-if not gui.Parent then gui.Parent = player:WaitForChild("PlayerGui") end
+
+-- try every parent an executor might allow, in order
+local function tryParent(getParent)
+	local ok, parent = pcall(getParent)
+	if ok and parent then
+		local ok2 = pcall(function() gui.Parent = parent end)
+		return ok2 and gui.Parent == parent
+	end
+	return false
+end
+
+pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
+local parented = tryParent(function() return gethui and gethui() end)
+	or tryParent(function() return game:GetService("CoreGui") end)
+	or tryParent(function() return player:WaitForChild("PlayerGui", 5) end)
+print("[desync] GUI parented:", parented, gui.Parent and gui.Parent:GetFullName())
 refreshButton()
 
 conns[#conns + 1] = button.MouseButton1Click:Connect(toggle)
@@ -107,11 +130,11 @@ conns[#conns + 1] = player.CharacterAdded:Connect(function()
 	if on then toggle() end
 end)
 
-getgenv().__DESYNC_LOADED = true
-getgenv().__DESYNC_CLEANUP = function()
+env.__DESYNC_LOADED = true
+env.__DESYNC_CLEANUP = function()
 	if on then setFlags(false) end
 	for _, c in ipairs(conns) do c:Disconnect() end
 	if ghost then ghost:Destroy() end
 	if gui then gui:Destroy() end
-	getgenv().__DESYNC_LOADED = nil
+	env.__DESYNC_LOADED = nil
 end
