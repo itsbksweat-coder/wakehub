@@ -30,19 +30,39 @@ local on = false
 local ghost, gui, button
 local conns = {}
 
+-- Method 2: throttle outgoing bandwidth. Position updates ride on this channel,
+-- so squeezing it stops your character from replicating.
+local NetworkClient = game:GetService("NetworkClient")
+local savedLimit
+
+local function setBandwidth(enable)
+	if enable then
+		local ok, cur = pcall(function() return NetworkClient:GetOutgoingKBPSLimit() end)
+		savedLimit = (ok and type(cur) == "number") and cur or 100000
+		return pcall(function() NetworkClient:SetOutgoingKBPSLimit(1) end)
+	end
+	return pcall(function() NetworkClient:SetOutgoingKBPSLimit(savedLimit or 100000) end)
+end
+
 local function setFlags(enable)
 	local setf = setfflag or env.setfflag
-	if not setf then
-		warn("[desync] setfflag not supported by this executor")
-		return false
-	end
-	local any = false
-	for _, f in ipairs(FLAGS) do
-		if pcall(setf, f[1], enable and f[2] or f[3]) then
-			any = true
+	local used = {}
+	if setf then
+		for _, f in ipairs(FLAGS) do
+			if pcall(setf, f[1], enable and f[2] or f[3]) then
+				used[#used + 1] = f[1]
+			end
 		end
 	end
-	return any
+	if setBandwidth(enable) then
+		used[#used + 1] = "OutgoingKBPSLimit"
+	end
+	if #used == 0 then
+		warn("[desync] no desync method worked on this executor")
+		return false
+	end
+	print("[desync] " .. (enable and "ON" or "OFF") .. " via: " .. table.concat(used, ", "))
+	return true
 end
 
 local function setGhost(cf)
