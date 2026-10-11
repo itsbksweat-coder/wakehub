@@ -1,37 +1,49 @@
--- Desync (executor LocalScript)
--- Press the toggle key to freeze your character's replication. You keep moving
--- on your screen, but the server and every other client see you stuck at the
--- spot where you toggled it on. A blue ghost shows where others see you.
--- Press the key again to resync (your real position gets sent again).
---
--- Needs an executor with setfflag. Roblox has whitelisted/blocked many FFlags,
--- so if it does nothing, the flag is patched on your executor/client.
+-- Executor desync
+-- Toggle with the on-screen button or the V key.
+-- While ON, your character stops replicating: you move normally on your screen,
+-- but the server and all other clients see you frozen at the toggle spot.
+-- A blue ghost shows where everyone else sees you. Toggle off to resync.
+-- Needs setfflag. If your executor/client has the flags blocked, it will tell you.
 
-local TOGGLE_KEY = Enum.KeyCode.V
-local DESYNC_RATE = "1"   -- physics packets per second while desynced
-local NORMAL_RATE = "15"  -- Roblox default
+if getgenv().__DESYNC_LOADED then
+	getgenv().__DESYNC_CLEANUP()
+end
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 
+local KEY = Enum.KeyCode.V
 local player = Players.LocalPlayer
-local desynced = false
-local ghost
 
-local function setRate(rate)
-	local setf = setfflag or (getgenv and getgenv().setfflag)
+-- flags set while desynced, and the value restored on resync
+local FLAGS = {
+	{ "S2PhysicsSenderRate", "1", "15" },
+	{ "NextGenReplicatorEnabledWrite", "True", "False" },
+}
+
+local on = false
+local ghost, gui, button
+local conns = {}
+
+local function setFlags(enable)
+	local setf = setfflag or (getgenv().setfflag)
 	if not setf then
-		warn("[desync] your executor has no setfflag")
+		warn("[desync] setfflag not supported by this executor")
 		return false
 	end
-	-- the DFInt prefix is dropped when calling setfflag
-	local ok = pcall(setf, "S2PhysicsSenderRate", rate)
-	return ok
+	local any = false
+	for _, f in ipairs(FLAGS) do
+		if pcall(setf, f[1], enable and f[2] or f[3]) then
+			any = true
+		end
+	end
+	return any
 end
 
-local function makeGhost(cf)
-	if ghost then ghost:Destroy() end
+local function setGhost(cf)
+	if ghost then ghost:Destroy() ghost = nil end
+	if not cf then return end
 	ghost = Instance.new("Part")
 	ghost.Name = "DesyncGhost"
 	ghost.Size = Vector3.new(2, 5, 1)
@@ -41,42 +53,65 @@ local function makeGhost(cf)
 	ghost.CanTouch = false
 	ghost.Material = Enum.Material.ForceField
 	ghost.Color = Color3.fromRGB(80, 160, 255)
-	ghost.Transparency = 0.4
 	ghost.CFrame = cf
 	ghost.Parent = workspace
 end
 
-local function enable()
-	local char = player.Character
-	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if not root then return end
-	if not setRate(DESYNC_RATE) then return end
-	desynced = true
-	makeGhost(root.CFrame)
-	print("[desync] ON")
-end
-
-local function disable()
-	setRate(NORMAL_RATE)
-	desynced = false
-	if ghost then ghost:Destroy() ghost = nil end
-	print("[desync] OFF")
-end
-
-UIS.InputBegan:Connect(function(input, processed)
-	if processed or input.KeyCode ~= TOGGLE_KEY then return end
-	if desynced then disable() else enable() end
-end)
-
--- never stay desynced after respawn
-player.CharacterAdded:Connect(function()
-	if desynced then disable() end
-end)
-
--- keep the ghost at the frozen spot
-RunService.Heartbeat:Connect(function()
-	if not desynced and ghost then
-		ghost:Destroy()
-		ghost = nil
+local function refreshButton()
+	if button then
+		button.Text = on and "Desync: ON" or "Desync: OFF"
+		button.BackgroundColor3 = on and Color3.fromRGB(40, 150, 80) or Color3.fromRGB(150, 50, 50)
 	end
+end
+
+local function toggle()
+	if not on then
+		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		if not root then return end
+		if not setFlags(true) then return end
+		on = true
+		setGhost(root.CFrame)
+	else
+		setFlags(false)
+		on = false
+		setGhost(nil)
+	end
+	refreshButton()
+end
+
+-- GUI
+gui = Instance.new("ScreenGui")
+gui.Name = "DesyncGui"
+gui.ResetOnSpawn = false
+button = Instance.new("TextButton")
+button.Size = UDim2.new(0, 130, 0, 36)
+button.Position = UDim2.new(0, 12, 0.5, 0)
+button.TextColor3 = Color3.new(1, 1, 1)
+button.Font = Enum.Font.GothamBold
+button.TextSize = 14
+button.BorderSizePixel = 0
+button.Parent = gui
+Instance.new("UICorner", button).CornerRadius = UDim.new(0, 6)
+pcall(function()
+	gui.Parent = (gethui and gethui()) or game:GetService("CoreGui")
 end)
+if not gui.Parent then gui.Parent = player:WaitForChild("PlayerGui") end
+refreshButton()
+
+conns[#conns + 1] = button.MouseButton1Click:Connect(toggle)
+conns[#conns + 1] = UIS.InputBegan:Connect(function(i, gp)
+	if not gp and i.KeyCode == KEY then toggle() end
+end)
+-- resync on respawn so you don't spawn frozen
+conns[#conns + 1] = player.CharacterAdded:Connect(function()
+	if on then toggle() end
+end)
+
+getgenv().__DESYNC_LOADED = true
+getgenv().__DESYNC_CLEANUP = function()
+	if on then setFlags(false) end
+	for _, c in ipairs(conns) do c:Disconnect() end
+	if ghost then ghost:Destroy() end
+	if gui then gui:Destroy() end
+	getgenv().__DESYNC_LOADED = nil
+end
