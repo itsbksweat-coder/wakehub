@@ -12,6 +12,18 @@ if env.__DESYNC_LOADED then
 	pcall(env.__DESYNC_CLEANUP)
 end
 
+-- capability report: copy this into chat if something doesn't work
+do
+	local names = { "setfflag", "getgenv", "gethui", "sethiddenproperty", "gethiddenproperty", "setsimulationradius", "firesignal", "hookmetamethod" }
+	local have, missing = {}, {}
+	for _, n in ipairs(names) do
+		local ok, v = pcall(function() return getfenv()[n] end)
+		if ok and v ~= nil then have[#have + 1] = n else missing[#missing + 1] = n end
+	end
+	print("[desync] executor has: " .. table.concat(have, ", "))
+	print("[desync] executor missing: " .. table.concat(missing, ", "))
+end
+
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
@@ -39,7 +51,9 @@ local function setBandwidth(enable)
 	if enable then
 		local ok, cur = pcall(function() return NetworkClient:GetOutgoingKBPSLimit() end)
 		savedLimit = (ok and type(cur) == "number") and cur or 100000
-		return pcall(function() NetworkClient:SetOutgoingKBPSLimit(1) end)
+		local ok2, err = pcall(function() NetworkClient:SetOutgoingKBPSLimit(1) end)
+		if not ok2 then warn("[desync] SetOutgoingKBPSLimit failed: " .. tostring(err)) end
+		return ok2
 	end
 	return pcall(function() NetworkClient:SetOutgoingKBPSLimit(savedLimit or 100000) end)
 end
@@ -47,10 +61,14 @@ end
 local function setFlags(enable)
 	local setf = setfflag or env.setfflag
 	local used = {}
+	if not setf then warn("[desync] this executor has no setfflag") end
 	if setf then
 		for _, f in ipairs(FLAGS) do
-			if pcall(setf, f[1], enable and f[2] or f[3]) then
+			local ok, err = pcall(setf, f[1], enable and f[2] or f[3])
+			if ok then
 				used[#used + 1] = f[1]
+			else
+				warn("[desync] setfflag " .. f[1] .. " failed: " .. tostring(err))
 			end
 		end
 	end
