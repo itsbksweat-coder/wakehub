@@ -35,7 +35,8 @@ while not player do task.wait() player = Players.LocalPlayer end
 -- flags set while desynced, and the value restored on resync
 local FLAGS = {
 	{ "S2PhysicsSenderRate", "1", "15" },
-	{ "NextGenReplicatorEnabledWrite", "True", "False" },
+	{ "WorldStepMax", "-9999999999", "30" },
+	{ "MaxMissedWorldStepsRemembered", "-2147483648", "16" },
 }
 
 local on = false
