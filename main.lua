@@ -1,18 +1,14 @@
--- Executor desync
--- Toggle with the on-screen button or the V key.
--- While ON, your character stops replicating: you move normally on your screen,
--- but the server and all other clients see you frozen at the toggle spot.
--- A blue ghost shows where everyone else sees you. Toggle off to resync.
--- Needs setfflag. If your executor/client has the flags blocked, it will tell you.
+-- Executor desync - layered methods
+-- Freezes LocalPlayer for everyone else. You stay movable locally.
+-- Toggle: V key, or the on-screen button.
+-- Tested target: Synapse Z. Needs setfflag, sethiddenproperty, getgenv.
 
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local env = (getgenv and getgenv()) or _G
-if env.__DESYNC_LOADED then
-	pcall(env.__DESYNC_CLEANUP)
-end
+if env.__DESYNC_LOADED then pcall(env.__DESYNC_CLEANUP) end
 
--- capability report: copy this into chat if something doesn't work
+-- capability probe
 do
 	local names = { "setfflag", "getgenv", "gethui", "sethiddenproperty", "gethiddenproperty", "setsimulationradius", "firesignal", "hookmetamethod" }
 	local have, missing = {}, {}
@@ -27,66 +23,117 @@ end
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local NetworkClient = game:GetService("NetworkClient")
 
 local KEY = Enum.KeyCode.V
 local player = Players.LocalPlayer
 while not player do task.wait() player = Players.LocalPlayer end
 
--- flags set while desynced, and the value restored on resync
 local FLAGS = {
 	{ "S2PhysicsSenderRate", "1", "15" },
 	{ "WorldStepMax", "-9999999999", "30" },
 	{ "MaxMissedWorldStepsRemembered", "-2147483648", "16" },
+	{ "ChatOutgoingThrottleBuffer", "9999999", "100" },
 }
 
 local on = false
 local ghost, gui, button
-local conns = {}
+local conns, physConn, cleanupExtras = {}, nil, {}
+local frozenCF, savedBandwidth, savedSimRadius, savedMaxSimRadius
 
--- Method 2: throttle outgoing bandwidth. Position updates ride on this channel,
--- so squeezing it stops your character from replicating.
-local NetworkClient = game:GetService("NetworkClient")
-local savedLimit
+-- ============ METHODS ============
 
-local function setBandwidth(enable)
-	if enable then
-		local ok, cur = pcall(function() return NetworkClient:GetOutgoingKBPSLimit() end)
-		savedLimit = (ok and type(cur) == "number") and cur or 100000
-		local ok2, err = pcall(function() NetworkClient:SetOutgoingKBPSLimit(1) end)
-		if not ok2 then warn("[desync] SetOutgoingKBPSLimit failed: " .. tostring(err)) end
-		return ok2
-	end
-	return pcall(function() NetworkClient:SetOutgoingKBPSLimit(savedLimit or 100000) end)
-end
-
-local function setFlags(enable)
+local function tryFFlags(enable)
 	local setf = setfflag or env.setfflag
 	local used = {}
-	if not setf then warn("[desync] this executor has no setfflag") end
-	if setf then
-		for _, f in ipairs(FLAGS) do
-			local ok, err = pcall(setf, f[1], enable and f[2] or f[3])
-			if ok then
-				used[#used + 1] = f[1]
-			else
-				warn("[desync] setfflag " .. f[1] .. " failed: " .. tostring(err))
-			end
-		end
+	if not setf then return used end
+	for _, f in ipairs(FLAGS) do
+		local ok = pcall(setf, f[1], enable and f[2] or f[3])
+		if ok then used[#used + 1] = f[1] end
 	end
-	if setBandwidth(enable) then
-		used[#used + 1] = "OutgoingKBPSLimit"
-	end
-	if #used == 0 then
-		warn("[desync] no desync method worked on this executor")
-		return false
-	end
-	print("[desync] " .. (enable and "ON" or "OFF") .. " via: " .. table.concat(used, ", "))
-	return true
+	return used
 end
 
-local function setGhost(cf)
+local function tryBandwidth(enable)
+	if enable then
+		local ok, cur = pcall(function() return NetworkClient:GetOutgoingKBPSLimit() end)
+		savedBandwidth = (ok and type(cur) == "number") and cur or 100000
+		local ok2 = pcall(function() NetworkClient:SetOutgoingKBPSLimit(1) end)
+		return ok2 and "OutgoingKBPSLimit(1)" or nil
+	else
+		pcall(function() NetworkClient:SetOutgoingKBPSLimit(savedBandwidth or 100000) end)
+		return "OutgoingKBPSLimit(restored)"
+	end
+end
+
+local function trySimulationRadius(enable)
+	local shp = sethiddenproperty or env.sethiddenproperty
+	local ghp = gethiddenproperty or env.gethiddenproperty
+	if not shp then return nil end
+	if enable then
+		if ghp then
+			local ok1, r = pcall(ghp, player, "SimulationRadius")
+			local ok2, mr = pcall(ghp, player, "MaximumSimulationRadius")
+			if ok1 then savedSimRadius = r end
+			if ok2 then savedMaxSimRadius = mr end
+		end
+		local a = pcall(shp, player, "SimulationRadius", 0)
+		local b = pcall(shp, player, "MaximumSimulationRadius", 0)
+		if a or b then return "SimulationRadius=0" end
+	else
+		pcall(shp, player, "SimulationRadius", savedSimRadius or 139)
+		pcall(shp, player, "MaximumSimulationRadius", savedMaxSimRadius or math.huge)
+		return "SimulationRadius(restored)"
+	end
+	return nil
+end
+
+local function trySetSimRadiusFn(enable)
+	local ssr = setsimulationradius or env.setsimulationradius
+	if not ssr then return nil end
+	local ok = pcall(ssr, enable and 0 or 139)
+	return ok and "setsimulationradius" or nil
+end
+
+-- Physics-step position lock: before every physics step, snap HRP to the
+-- frozen CFrame so the replicator sends the frozen position. After the step,
+-- snap it back to where you are locally so you can keep moving on screen.
+local function startPhysicsLock()
+	local char = player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then return nil end
+	frozenCF = root.CFrame
+	local localCF = root.CFrame
+
+	local steppedConn = RunService.Stepped:Connect(function()
+		local c = player.Character
+		local r = c and c:FindFirstChild("HumanoidRootPart")
+		if not r then return end
+		localCF = r.CFrame
+		pcall(function() r.CFrame = frozenCF end)
+	end)
+
+	local heartConn = RunService.Heartbeat:Connect(function()
+		local c = player.Character
+		local r = c and c:FindFirstChild("HumanoidRootPart")
+		if not r then return end
+		pcall(function() r.CFrame = localCF end)
+	end)
+
+	cleanupExtras[#cleanupExtras + 1] = function()
+		steppedConn:Disconnect()
+		heartConn:Disconnect()
+	end
+	return "PhysicsStepLock"
+end
+
+local function stopPhysicsLock()
+	for _, fn in ipairs(cleanupExtras) do pcall(fn) end
+	cleanupExtras = {}
+end
+
+local function makeGhost(cf)
 	if ghost then ghost:Destroy() ghost = nil end
-	if not cf then return end
 	ghost = Instance.new("Part")
 	ghost.Name = "DesyncGhost"
 	ghost.Size = Vector3.new(2, 5, 1)
@@ -100,24 +147,40 @@ local function setGhost(cf)
 	ghost.Parent = workspace
 end
 
+local function removeGhost()
+	if ghost then ghost:Destroy() ghost = nil end
+end
+
 local function refreshButton()
-	if button then
-		button.Text = on and "Desync: ON" or "Desync: OFF"
-		button.BackgroundColor3 = on and Color3.fromRGB(40, 150, 80) or Color3.fromRGB(150, 50, 50)
-	end
+	if not button then return end
+	button.Text = on and "Desync: ON" or "Desync: OFF"
+	button.BackgroundColor3 = on and Color3.fromRGB(40, 150, 80) or Color3.fromRGB(150, 50, 50)
 end
 
 local function toggle()
 	if not on then
-		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-		if not root then return end
-		if not setFlags(true) then return end
+		local char = player.Character
+		local root = char and char:FindFirstChild("HumanoidRootPart")
+		if not root then warn("[desync] no character") return end
+		local used = {}
+		for _, m in ipairs(tryFFlags(true)) do used[#used + 1] = m end
+		local b = tryBandwidth(true); if b then used[#used + 1] = b end
+		local s = trySimulationRadius(true); if s then used[#used + 1] = s end
+		local ss = trySetSimRadiusFn(true); if ss then used[#used + 1] = ss end
+		local p = startPhysicsLock(); if p then used[#used + 1] = p end
+		if #used == 0 then warn("[desync] no method worked") return end
 		on = true
-		setGhost(root.CFrame)
+		makeGhost(root.CFrame)
+		print("[desync] ON via: " .. table.concat(used, ", "))
 	else
-		setFlags(false)
+		stopPhysicsLock()
+		tryFFlags(false)
+		tryBandwidth(false)
+		trySimulationRadius(false)
+		trySetSimRadiusFn(false)
 		on = false
-		setGhost(nil)
+		removeGhost()
+		print("[desync] OFF")
 	end
 	refreshButton()
 end
@@ -143,7 +206,6 @@ button.ZIndex = 10
 button.Parent = gui
 Instance.new("UICorner", button).CornerRadius = UDim.new(0, 6)
 
--- try every parent an executor might allow, in order
 local function tryParent(getParent)
 	local ok, parent = pcall(getParent)
 	if ok and parent then
@@ -152,7 +214,6 @@ local function tryParent(getParent)
 	end
 	return false
 end
-
 pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
 local parented = tryParent(function() return gethui and gethui() end)
 	or tryParent(function() return game:GetService("CoreGui") end)
@@ -164,15 +225,17 @@ conns[#conns + 1] = button.MouseButton1Click:Connect(toggle)
 conns[#conns + 1] = UIS.InputBegan:Connect(function(i, gp)
 	if not gp and i.KeyCode == KEY then toggle() end
 end)
--- resync on respawn so you don't spawn frozen
 conns[#conns + 1] = player.CharacterAdded:Connect(function()
 	if on then toggle() end
 end)
 
 env.__DESYNC_LOADED = true
 env.__DESYNC_CLEANUP = function()
-	if on then setFlags(false) end
-	for _, c in ipairs(conns) do c:Disconnect() end
+	if on then
+		stopPhysicsLock()
+		tryFFlags(false); tryBandwidth(false); trySimulationRadius(false); trySetSimRadiusFn(false)
+	end
+	for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
 	if ghost then ghost:Destroy() end
 	if gui then gui:Destroy() end
 	env.__DESYNC_LOADED = nil
