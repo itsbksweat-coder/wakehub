@@ -168,8 +168,10 @@ local function toggle()
 		local used = {}
 		for _, m in ipairs(tryFFlags(true)) do used[#used + 1] = m end
 		local b = tryBandwidth(true); if b then used[#used + 1] = b end
-		local s = trySimulationRadius(true); if s then used[#used + 1] = s end
-		local ss = trySetSimRadiusFn(true); if ss then used[#used + 1] = ss end
+		-- SimulationRadius=0 hands physics ownership of your character to the
+		-- server, which also stops YOU from moving. Leaving these out.
+		-- local s = trySimulationRadius(true); if s then used[#used + 1] = s end
+		-- local ss = trySetSimRadiusFn(true); if ss then used[#used + 1] = ss end
 		local p = startPhysicsLock(); if p then used[#used + 1] = p end
 		if #used == 0 then warn("[desync] no method worked") return end
 		on = true
