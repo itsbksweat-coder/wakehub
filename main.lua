@@ -105,19 +105,22 @@ local function startPhysicsLock()
 	frozenCF = root.CFrame
 	local localCF = root.CFrame
 
+	-- order matters: let physics advance from your real position, THEN snap to
+	-- frozen so the replicator picks up frozen. Next frame, restore before
+	-- physics so your input keeps moving the character locally.
 	local steppedConn = RunService.Stepped:Connect(function()
 		local c = player.Character
 		local r = c and c:FindFirstChild("HumanoidRootPart")
 		if not r then return end
-		localCF = r.CFrame
-		pcall(function() r.CFrame = frozenCF end)
+		pcall(function() r.CFrame = localCF end)
 	end)
 
 	local heartConn = RunService.Heartbeat:Connect(function()
 		local c = player.Character
 		local r = c and c:FindFirstChild("HumanoidRootPart")
 		if not r then return end
-		pcall(function() r.CFrame = localCF end)
+		localCF = r.CFrame
+		pcall(function() r.CFrame = frozenCF end)
 	end)
 
 	cleanupExtras[#cleanupExtras + 1] = function()
